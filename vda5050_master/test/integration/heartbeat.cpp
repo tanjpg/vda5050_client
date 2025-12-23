@@ -23,6 +23,7 @@
 #include <chrono>
 #include <thread>
 
+#include "vda5050_core/logger/logger.hpp"
 #include "vda5050_master/standard_names.hpp"
 
 using vda5050_master::communication::HeartbeatState;
