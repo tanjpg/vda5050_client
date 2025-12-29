@@ -161,24 +161,19 @@ int HeartbeatListener::get_check_interval()
 
 bool HeartbeatListener::is_stop_requested()
 {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  return state_ == HeartbeatState::STOPPING;
+  return get_state() == HeartbeatState::STOPPING;
 }
 
 bool HeartbeatListener::is_timeout()
 {
-  std::chrono::steady_clock::time_point current_time = get_current_time();
-  int time_since_last_connection_report;
-  {
-    std::lock_guard<std::mutex> lock(last_connection_report_mutex_);
-    time_since_last_connection_report =
-      std::chrono::duration_cast<std::chrono::seconds>(
-        current_time - last_connection_report_)
-        .count();
-  }
+  auto current_time = get_current_time();
+  auto last_report = get_last_connection_report();
+  auto time_since_last_connection_report =
+    std::chrono::duration_cast<std::chrono::seconds>(current_time - last_report)
+      .count();
 
   const int interval = get_check_interval();
-  if (std::abs(time_since_last_connection_report) >= interval)
+  if (time_since_last_connection_report >= interval)
   {
     VDA5050_WARN(
       "[{}] Connection heartbeat timeout after {} seconds (max: {}s)", id_,
