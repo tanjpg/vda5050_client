@@ -103,25 +103,34 @@ HeartbeatState HeartbeatListener::get_state() const
 
 void HeartbeatListener::stop_connection_heartbeat()
 {
-  VDA5050_INFO("Stopping Connection heartbeat listener");
-
+  bool need_signal = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    state_ = HeartbeatState::STOPPING;
+    if (state_ == HeartbeatState::STOPPING)
+    {
+      VDA5050_DEBUG("[{}] Heartbeat listener already stopping", id_);
+      return;
+    }
+    if (state_ == HeartbeatState::RUNNING)
+    {
+      VDA5050_INFO("Stopping Connection heartbeat listener");
+      state_ = HeartbeatState::STOPPING;
+      need_signal = true;
+    }
+    // If STOPPED, we still need to join threads (they may have finished naturally)
   }
 
+  // Only signal if we transitioned from RUNNING to STOPPING
+  if (need_signal)
   {
     std::lock_guard<std::mutex> lock(check_lock_);
     message_received_.notify_all();
   }
 
+  // Always try to join threads to clean up resources
   if (connection_thread_.joinable())
   {
     connection_thread_.join();
-  }
-  else
-  {
-    VDA5050_INFO("Connection thread not joinable");
   }
 
   if (callback_thread_.joinable())
