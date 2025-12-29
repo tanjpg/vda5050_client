@@ -54,8 +54,19 @@ void HeartbeatListener::start_connection_heartbeat()
 {
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    if (state_ != HeartbeatState::STOPPED)
+    {
+      VDA5050_WARN(
+        "[{}] Cannot start heartbeat listener: not in STOPPED state", id_);
+      return;
+    }
     VDA5050_INFO("Starting Connection heartbeat listener");
     state_ = HeartbeatState::RUNNING;
+  }
+  // Reset the last connection report time when starting
+  {
+    std::lock_guard<std::mutex> lock(last_connection_report_mutex_);
+    last_connection_report_ = get_current_time();
   }
   connection_thread_ = std::thread(&HeartbeatListener::listen, this);
 }
