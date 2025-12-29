@@ -79,9 +79,12 @@ void HeartbeatListener::received_connection()
     VDA5050_DEBUG("Connection heartbeat not running, ignored...");
     return;
   }
-  std::lock_guard<std::mutex> lock(last_connection_report_mutex_);
-  last_connection_report_ = get_current_time();
+  {
+    std::lock_guard<std::mutex> lock(last_connection_report_mutex_);
+    last_connection_report_ = get_current_time();
+  }
   VDA5050_INFO("[{}] Received connection heartbeat", id_);
+  // Notify with check_lock_ to properly synchronize with condition variable wait
   {
     std::lock_guard<std::mutex> lock(check_lock_);
     message_received_.notify_all();
@@ -175,7 +178,7 @@ bool HeartbeatListener::is_timeout()
   }
 
   const int interval = get_check_interval();
-  if (std::abs(time_since_last_connection_report) > interval)
+  if (std::abs(time_since_last_connection_report) >= interval)
   {
     VDA5050_WARN(
       "[{}] Connection heartbeat timeout after {} seconds (max: {}s)", id_,
@@ -189,9 +192,12 @@ void HeartbeatListener::listen()
 {
   while (!is_stop_requested())
   {
+    const int interval = get_check_interval();
+
+    // Wait for the interval, or until notified (heartbeat received or stop requested)
     {
       std::unique_lock<std::mutex> lock(check_lock_);
-      message_received_.wait_for(lock, std::chrono::seconds(wait_seconds));
+      message_received_.wait_for(lock, std::chrono::seconds(interval));
     }
 
     // Check if shutdown was requested while waiting
@@ -209,6 +215,11 @@ void HeartbeatListener::listen()
       if (callback_thread_.joinable())
       {
         callback_thread_.join();
+      }
+      // Update state to STOPPED since we're exiting due to timeout
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = HeartbeatState::STOPPED;
       }
       VDA5050_INFO("[{}] Heartbeat monitoring stopped after timeout", id_);
       return;
