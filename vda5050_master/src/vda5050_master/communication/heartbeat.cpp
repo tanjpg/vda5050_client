@@ -109,18 +109,13 @@ void HeartbeatListener::stop_connection_heartbeat()
   bool need_signal = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (state_ == HeartbeatState::STOPPING)
-    {
-      VDA5050_DEBUG("[{}] Heartbeat listener already stopping", id_);
-      return;
-    }
     if (state_ == HeartbeatState::RUNNING)
     {
       VDA5050_INFO("Stopping Connection heartbeat listener");
       state_ = HeartbeatState::STOPPING;
       need_signal = true;
     }
-    // If STOPPED, we still need to join threads (they may have finished naturally)
+    // If STOPPING (timeout path) or STOPPED, we still need to join threads
   }
 
   // Only signal if we transitioned from RUNNING to STOPPING
@@ -204,6 +199,12 @@ void HeartbeatListener::listen()
 
     if (is_timeout())
     {
+      // Set state to STOPPING before callback
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = HeartbeatState::STOPPING;
+      }
+
       // Copy callback by value to ensure safe invocation
       auto callback_copy = disconnection_callback_;
       callback_thread_ = std::thread([callback_copy]() { callback_copy(); });
@@ -211,7 +212,8 @@ void HeartbeatListener::listen()
       {
         callback_thread_.join();
       }
-      // Update state to STOPPED since we're exiting due to timeout
+
+      // Set state to STOPPED after callback completes
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
         state_ = HeartbeatState::STOPPED;
