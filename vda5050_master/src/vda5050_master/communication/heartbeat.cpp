@@ -71,7 +71,10 @@ void HeartbeatListener::received_connection()
   std::lock_guard<std::mutex> lock(last_connection_report_mutex_);
   last_connection_report_ = get_current_time();
   VDA5050_INFO("[{}] Received connection heartbeat", id_);
-  message_received_.notify_all();
+  {
+    std::lock_guard<std::mutex> lock(check_lock_);
+    message_received_.notify_all();
+  }
 }
 
 std::chrono::steady_clock::time_point
@@ -96,7 +99,10 @@ void HeartbeatListener::stop_connection_heartbeat()
     state_ = HeartbeatState::STOPPING;
   }
 
-  message_received_.notify_all();
+  {
+    std::lock_guard<std::mutex> lock(check_lock_);
+    message_received_.notify_all();
+  }
 
   if (connection_thread_.joinable())
   {
@@ -162,9 +168,10 @@ void HeartbeatListener::listen()
 {
   while (!is_stop_requested())
   {
-    std::unique_lock<std::mutex> lock(check_lock_);
-    message_received_.wait_for(
-      lock, std::chrono::seconds(get_check_interval()));
+    {
+      std::unique_lock<std::mutex> lock(check_lock_);
+      message_received_.wait_for(lock, std::chrono::seconds(wait_seconds));
+    }
 
     // Check if shutdown was requested while waiting
     if (is_stop_requested())
