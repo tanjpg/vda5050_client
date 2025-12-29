@@ -58,7 +58,16 @@ public:
     last_connection_report_(std::chrono::steady_clock::now()),
     disconnection_callback_(disconnection_callback)
   {
-    // Nothing to do here ...
+    if (heartbeat_interval_ <= 0)
+    {
+      throw std::invalid_argument(
+        "HeartbeatListener: heartbeat_interval must be positive");
+    }
+    if (!disconnection_callback_)
+    {
+      throw std::invalid_argument(
+        "HeartbeatListener: disconnection_callback cannot be null");
+    }
   }
 
   void start_connection_heartbeat()
