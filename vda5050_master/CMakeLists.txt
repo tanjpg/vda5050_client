@@ -74,6 +74,12 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_master vda5050_master)
 
+  # Order validation unit tests (no MQTT broker required)
+  ament_add_gmock(test_order_validation
+    test/master/order_validation_test.cpp
+  )
+  target_link_libraries(test_order_validation vda5050_master)
+
 endif()
 
 ament_package()

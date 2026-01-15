@@ -184,6 +184,31 @@ public:
     const std::string& manufacturer, const std::string& serial_number,
     const vda5050_types::InstantActions& actions);
 
+  // ============================================================================
+  // Order Validation
+  // ============================================================================
+
+  /**
+   * @brief Validate an order before publishing
+   * @param order The order to validate
+   * @return true if order is valid, false otherwise
+   *
+   * Extracts manufacturer/serial_number from order.header and validates:
+   * - AGV must be onboarded
+   * - New orders must have order_update_id == 0
+   * - Order updates must have order_update_id > current
+   * - Minimum 1 node required
+   * - Node count must equal edge count + 1
+   * - Node sequence_ids must be even and incremental
+   * - Edge sequence_ids must be odd and incremental
+   * - Combined sequence_ids must have no gaps
+   * - Must have at least one released node
+   * - Edges must reference existing nodes
+   * - An edge can only be released if both start and end nodes are released
+   * - After an unreleased edge, no released nodes or edges can follow in sequence
+   */
+  bool validate_order(const vda5050_types::Order& order) const;
+
 protected:
   // ============================================================================
   // Virtual callback methods - Override these in derived classes
@@ -300,6 +325,19 @@ private:
    */
   std::pair<std::string, std::shared_ptr<AGV>> get_agv_from_topic(
     const std::string& topic, const std::string& message_type);
+
+  // ============================================================================
+  // Order Validation Helpers
+  // ============================================================================
+
+  /**
+   * @brief Validate that an order update can be stitched to the AGV's current order
+   * @param agv The AGV to validate against
+   * @param order The order update to validate
+   * @return true if the order update is valid, false otherwise
+   */
+  bool validate_order_update(
+    const std::shared_ptr<AGV>& agv, const vda5050_types::Order& order) const;
 
   // ============================================================================
   // Member Variables
