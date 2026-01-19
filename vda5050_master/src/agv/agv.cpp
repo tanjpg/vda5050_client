@@ -221,11 +221,19 @@ void AGV::handle_connection(const vda5050_types::Connection& msg)
 
 void AGV::handle_state(const vda5050_types::State& msg)
 {
-  // Update cached message
+  // Update cached message and order progress
   {
     std::lock_guard<std::mutex> lock(data_mutex_);
+
+    // Capture old state for event detection
+    auto old_state = last_state_;
+
+    // Update cached state
     last_state_ = msg;
     last_state_time_ = Clock::now();
+
+    // Update order progress and detect events
+    update_order_progress(old_state, msg);
   }
 
   // Notify heartbeat listener
@@ -306,6 +314,324 @@ std::optional<AGV::TimePoint> AGV::get_last_visualization_time() const
 {
   std::lock_guard<std::mutex> lock(data_mutex_);
   return last_visualization_time_;
+}
+
+// ============================================================================
+// Order Tracking
+// ============================================================================
+
+std::optional<vda5050_types::Order> AGV::get_current_order() const
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  return current_order_;
+}
+
+void AGV::set_current_order(const vda5050_types::Order& order)
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+
+  // Check if this is an order update to an existing tracked progress
+  bool is_order_update =
+    current_progress_.has_value() &&
+    current_progress_->order_id == order.order_id &&
+    order.order_update_id > current_progress_->order_update_id;
+
+  // Store the exact order message as sent (no modifications)
+  current_order_ = order;
+
+  // Add to order history
+  order_history_[order.order_id].push_back(order);
+
+  if (is_order_update)
+  {
+    // Order update: append new nodes/edges to full path in progress
+    // The first node in order.nodes is the stitching node (last base node of old order)
+    // Skip it when appending since it already exists in full_path
+    VDA5050_INFO(
+      "[AGV] Order update for {}: order_id={}, update_id={} -> {}", agv_id_,
+      order.order_id, current_progress_->order_update_id,
+      order.order_update_id);
+
+    // Append all nodes after the stitching node (skip order.nodes[0])
+    for (size_t i = 1; i < order.nodes.size(); ++i)
+    {
+      current_progress_->full_path_nodes.push_back(order.nodes[i]);
+    }
+
+    // Append all new edges from the update
+    for (const auto& edge : order.edges)
+    {
+      current_progress_->full_path_edges.push_back(edge);
+    }
+
+    // Update progress metadata
+    current_progress_->order_update_id = order.order_update_id;
+    current_progress_->total_nodes = current_progress_->full_path_nodes.size();
+    current_progress_->total_edges = current_progress_->full_path_edges.size();
+    current_progress_->confirmed = false;  // Reset confirmation for new update
+    current_progress_->completed = false;  // Reset completed for new update
+
+    VDA5050_INFO(
+      "[AGV] Full path now has {} total nodes, {} total edges",
+      current_progress_->total_nodes, current_progress_->total_edges);
+  }
+  else
+  {
+    // Fresh order: create new progress with this order's nodes/edges as initial full path
+    VDA5050_INFO(
+      "[AGV] New order for {}: order_id={}, update_id={}, nodes={}, edges={}",
+      agv_id_, order.order_id, order.order_update_id, order.nodes.size(),
+      order.edges.size());
+
+    OrderProgress progress;
+    progress.order_id = order.order_id;
+    progress.order_update_id = order.order_update_id;
+    progress.confirmed = false;
+
+    // Initialize full path with this order's nodes/edges
+    progress.full_path_nodes = order.nodes;
+    progress.full_path_edges = order.edges;
+
+    progress.completed_nodes = 0;
+    progress.total_nodes = order.nodes.size();
+    progress.current_node_id = "";
+    progress.current_node_sequence_id = 0;
+    progress.completed_edges = 0;
+    progress.total_edges = order.edges.size();
+    progress.current_edge_id = std::nullopt;
+    progress.current_edge_sequence_id = std::nullopt;
+    progress.driving = false;
+    progress.completed = false;
+
+    current_progress_ = progress;
+  }
+}
+
+std::optional<AGV::OrderProgress> AGV::get_order_progress() const
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  return current_progress_;
+}
+
+std::vector<vda5050_types::Order> AGV::get_order_history(
+  const std::string& order_id) const
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  auto it = order_history_.find(order_id);
+  if (it != order_history_.end())
+  {
+    return it->second;
+  }
+  return {};
+}
+
+const std::map<std::string, std::vector<vda5050_types::Order>>&
+AGV::get_all_order_history() const
+{
+  // Note: Caller should not hold reference across mutex boundaries
+  // This returns a const reference for read-only access
+  return order_history_;
+}
+
+void AGV::update_order_progress(
+  const std::optional<vda5050_types::State>& old_state,
+  const vda5050_types::State& new_state)
+{
+  // Note: Caller must hold data_mutex_
+
+  // If no progress being tracked, nothing to update
+  if (!current_progress_.has_value())
+  {
+    return;
+  }
+
+  auto& progress = current_progress_.value();
+
+  // Verify state matches tracked order
+  if (new_state.order_id != progress.order_id)
+  {
+    return;
+  }
+
+  // Check if AGV has confirmed acceptance (state order_update_id >= our order_update_id)
+  bool was_confirmed = progress.confirmed;
+  progress.confirmed = (new_state.order_update_id >= progress.order_update_id);
+
+  // Update progress based on state (using full_path for totals)
+  progress.total_nodes = progress.full_path_nodes.size();
+  progress.completed_nodes =
+    progress.total_nodes - new_state.node_states.size();
+  progress.current_node_id = new_state.last_node_id;
+  progress.current_node_sequence_id = new_state.last_node_sequence_id;
+
+  progress.total_edges = progress.full_path_edges.size();
+  progress.completed_edges =
+    progress.total_edges - new_state.edge_states.size();
+  progress.driving = new_state.driving;
+
+  // Current edge (if driving)
+  if (new_state.driving && !new_state.edge_states.empty())
+  {
+    progress.current_edge_id = new_state.edge_states.front().edge_id;
+    progress.current_edge_sequence_id =
+      new_state.edge_states.front().sequence_id;
+  }
+  else
+  {
+    progress.current_edge_id = std::nullopt;
+    progress.current_edge_sequence_id = std::nullopt;
+  }
+
+  // Check if order is completed (no base nodes remaining, no edges remaining)
+  bool all_base_done = true;
+  for (const auto& ns : new_state.node_states)
+  {
+    if (ns.released)
+    {
+      all_base_done = false;
+      break;
+    }
+  }
+  progress.completed = all_base_done && new_state.edge_states.empty();
+
+  // Detect order confirmation (AGV accepted our order)
+  if (progress.confirmed && !was_confirmed)
+  {
+    VDA5050_INFO(
+      "[AGV] {} confirmed order acceptance: order_id={}, update_id={}", agv_id_,
+      progress.order_id, progress.order_update_id);
+  }
+
+  // Event detection: compare with old state
+  if (old_state.has_value() && old_state->order_id == progress.order_id)
+  {
+    const auto& old = old_state.value();
+
+    // Detect node reached
+    if (new_state.last_node_sequence_id != old.last_node_sequence_id)
+    {
+      VDA5050_INFO(
+        "[AGV] {} reached node: id={}, seq={}", agv_id_, new_state.last_node_id,
+        new_state.last_node_sequence_id);
+    }
+
+    // Detect nodes completed (nodes removed from node_states)
+    if (new_state.node_states.size() < old.node_states.size())
+    {
+      size_t nodes_completed =
+        old.node_states.size() - new_state.node_states.size();
+      VDA5050_INFO(
+        "[AGV] {} completed {} node(s), progress: {}/{}", agv_id_,
+        nodes_completed, progress.completed_nodes, progress.total_nodes);
+    }
+
+    // Detect edges completed (edges removed from edge_states)
+    if (new_state.edge_states.size() < old.edge_states.size())
+    {
+      size_t edges_completed =
+        old.edge_states.size() - new_state.edge_states.size();
+      VDA5050_INFO(
+        "[AGV] {} completed {} edge(s), progress: {}/{}", agv_id_,
+        edges_completed, progress.completed_edges, progress.total_edges);
+    }
+
+    // Detect driving state change
+    if (
+      new_state.driving && !old.driving && progress.current_edge_id.has_value())
+    {
+      VDA5050_INFO(
+        "[AGV] {} started traversing edge: id={}, seq={}", agv_id_,
+        progress.current_edge_id.value(),
+        progress.current_edge_sequence_id.value());
+    }
+    else if (!new_state.driving && old.driving)
+    {
+      VDA5050_INFO(
+        "[AGV] {} stopped driving, now at node: {}", agv_id_,
+        new_state.last_node_id);
+    }
+
+    // Detect order completion (reached last base node, no more base nodes/edges)
+    if (
+      progress.completed &&
+      (!old.node_states.empty() || !old.edge_states.empty()))
+    {
+      VDA5050_INFO(
+        "[AGV] {} reached last base node, order ready for completion or "
+        "update: order_id={}, update_id={}",
+        agv_id_, progress.order_id, progress.order_update_id);
+
+      // Notify queue processor that AGV may be ready for a new order
+      queue_cv_.notify_one();
+    }
+  }
+}
+
+bool AGV::can_accept_new_order(const vda5050_types::Order& new_order) const
+{
+  std::lock_guard<std::mutex> lock(data_mutex_);
+
+  // If no order being tracked, AGV can accept any order
+  if (!current_progress_.has_value())
+  {
+    return true;
+  }
+
+  const auto& progress = current_progress_.value();
+
+  // If new order is an update to current order (same order_id), allow it
+  if (new_order.order_id == progress.order_id)
+  {
+    return true;
+  }
+
+  // Otherwise, check if current order is complete (all base nodes done)
+  if (!last_state_.has_value())
+  {
+    VDA5050_WARN(
+      "[AGV] {} cannot accept new order '{}': no state received yet, "
+      "still executing order '{}'",
+      agv_id_, new_order.order_id, progress.order_id);
+    return false;
+  }
+
+  const auto& state = last_state_.value();
+
+  // If state doesn't match tracked order, something is off
+  if (state.order_id != progress.order_id)
+  {
+    VDA5050_WARN(
+      "[AGV] {} cannot accept new order '{}': state order_id '{}' doesn't "
+      "match tracked order '{}'",
+      agv_id_, new_order.order_id, state.order_id, progress.order_id);
+    return false;
+  }
+
+  // Check if all base nodes are done and no edges remaining
+  for (const auto& ns : state.node_states)
+  {
+    if (ns.released)
+    {
+      VDA5050_WARN(
+        "[AGV] {} cannot accept new order '{}': still executing order '{}', "
+        "base node '{}' (seq={}) remaining",
+        agv_id_, new_order.order_id, progress.order_id, ns.node_id,
+        ns.sequence_id);
+      return false;
+    }
+  }
+
+  if (!state.edge_states.empty())
+  {
+    VDA5050_WARN(
+      "[AGV] {} cannot accept new order '{}': still executing order '{}', "
+      "{} edge(s) remaining",
+      agv_id_, new_order.order_id, progress.order_id, state.edge_states.size());
+    return false;
+  }
+
+  // No base nodes remaining and no edges - order is complete
+  return true;
 }
 
 // ============================================================================
@@ -442,8 +768,28 @@ void AGV::process_queues()
       }
       else if (!order_queue_.empty())
       {
-        order = std::move(order_queue_.front());
-        order_queue_.pop();
+        // Copy the order to check if AGV can accept it (need copy since we release lock)
+        vda5050_types::Order pending_order = order_queue_.front();
+
+        // Release queue lock to check acceptance (avoids lock ordering issues)
+        lock.unlock();
+
+        if (can_accept_new_order(pending_order))
+        {
+          // Re-acquire lock and pop the order
+          lock.lock();
+          if (!order_queue_.empty())
+          {
+            order = std::move(order_queue_.front());
+            order_queue_.pop();
+          }
+        }
+        else
+        {
+          // AGV not ready - wait for state update to signal completion
+          // Don't pop from queue, just continue waiting
+          continue;
+        }
       }
     }
 
@@ -493,6 +839,9 @@ void AGV::publish_order(const vda5050_types::Order& order)
       vda5050_master::OrderQos);
 
     client->disconnect();
+
+    // Start tracking the order (progress will be updated when AGV confirms via state)
+    set_current_order(order);
 
     VDA5050_INFO("[AGV] Published order to AGV: {}", agv_id_);
   }

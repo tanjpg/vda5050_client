@@ -23,12 +23,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "vda5050_core/mqtt_client/mqtt_client_interface.hpp"
 #include "vda5050_master/communication/heartbeat.hpp"
@@ -179,6 +181,97 @@ public:
   std::optional<vda5050_types::Visualization> get_last_visualization() const;
 
   // ============================================================================
+  // Order Tracking
+  // ============================================================================
+
+  /**
+   * @brief Progress information for the current order
+   */
+  struct OrderProgress
+  {
+    // Order identification
+    std::string order_id;
+    uint32_t order_update_id;
+
+    // Confirmation status: true if AGV state confirms this order
+    bool confirmed;
+
+    // Full path: accumulated nodes/edges across all order updates for this order_id
+    std::vector<vda5050_types::Node> full_path_nodes;
+    std::vector<vda5050_types::Edge> full_path_edges;
+
+    // Node progress
+    size_t completed_nodes;
+    size_t total_nodes;
+    std::string current_node_id;
+    uint32_t current_node_sequence_id;
+
+    // Edge progress
+    size_t completed_edges;
+    size_t total_edges;
+    std::optional<std::string> current_edge_id;        // nullopt if at node
+    std::optional<uint32_t> current_edge_sequence_id;  // nullopt if at node
+
+    bool driving;    // true = traversing edge, false = at node
+    bool completed;  // true = all base nodes done and no edges remaining
+  };
+
+  /**
+   * @brief Get the current order being executed by this AGV
+   * @return Optional containing the order if one is active, nullopt otherwise
+   */
+  std::optional<vda5050_types::Order> get_current_order() const;
+
+  /**
+   * @brief Set the current order being executed by this AGV
+   *
+   * This replaces any existing order. An order is considered complete when
+   * the AGV state reports reaching the last base node. At that point, a new
+   * order or stitched order (same order_id) can be set.
+   *
+   * @param order The order to set as current
+   */
+  void set_current_order(const vda5050_types::Order& order);
+
+  /**
+   * @brief Get the current order execution progress
+   * @return Optional containing progress if an order is active, nullopt otherwise
+   */
+  std::optional<OrderProgress> get_order_progress() const;
+
+  /**
+   * @brief Check if AGV can accept a new order
+   *
+   * Returns true if:
+   * - No current order is being executed, OR
+   * - New order is an update to current order (same order_id), OR
+   * - Current order is complete (all base nodes done, no edges remaining)
+   *
+   * @param new_order The order to check
+   * @return true if AGV can accept this order, false otherwise (with warning log)
+   */
+  bool can_accept_new_order(const vda5050_types::Order& new_order) const;
+
+  /**
+   * @brief Get the order history for a specific order_id
+   *
+   * Returns all Order messages received for the given order_id, including
+   * the initial order and all subsequent updates.
+   *
+   * @param order_id The order ID to look up
+   * @return Vector of Order messages, empty if order_id not found
+   */
+  std::vector<vda5050_types::Order> get_order_history(
+    const std::string& order_id) const;
+
+  /**
+   * @brief Get the complete order history map
+   * @return Map of order_id to vector of Order messages
+   */
+  const std::map<std::string, std::vector<vda5050_types::Order>>&
+  get_all_order_history() const;
+
+  // ============================================================================
   // Timestamps
   // ============================================================================
 
@@ -274,6 +367,23 @@ private:
   void cleanup_heartbeat();
 
   // ============================================================================
+  // Order Progress Tracking
+  // ============================================================================
+
+  /**
+   * @brief Update cached order progress based on new state
+   *
+   * Called from handle_state() when a new state message is received.
+   * Computes progress and detects/logs order execution events.
+   *
+   * @param old_state Previous state (for event detection)
+   * @param new_state New state just received
+   */
+  void update_order_progress(
+    const std::optional<vda5050_types::State>& old_state,
+    const vda5050_types::State& new_state);
+
+  // ============================================================================
   // Queue Processing
   // ============================================================================
 
@@ -328,6 +438,16 @@ private:
 
   std::optional<vda5050_types::Visualization> last_visualization_;
   std::optional<TimePoint> last_visualization_time_;
+
+  // Current order being executed (protected by data_mutex_)
+  std::optional<vda5050_types::Order> current_order_;
+
+  // Cached order progress - updated when state is received (protected by data_mutex_)
+  std::optional<OrderProgress> current_progress_;
+
+  // Order history: maps order_id to all Order messages for that order
+  // (protected by data_mutex_)
+  std::map<std::string, std::vector<vda5050_types::Order>> order_history_;
 
   // Outgoing message queues (protected by queue_mutex_)
   size_t max_queue_size_;
