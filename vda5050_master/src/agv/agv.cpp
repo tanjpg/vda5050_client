@@ -641,14 +641,4 @@ void AGV::publish_instant_actions(const vda5050_types::InstantActions& actions)
     actions, InstantActionsQos);
 }
 
-// ============================================================================
-// Helper Methods
-// ============================================================================
-
-std::string AGV::build_topic(const std::string& topic_name) const
-{
-  return InterfaceName + "/" + Version + "/" + manufacturer_ + "/" +
-         serial_number_ + "/" + topic_name;
-}
-
 }  // namespace vda5050_master

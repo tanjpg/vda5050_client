@@ -327,8 +327,6 @@ private:
   /// \param order The order to publish
   void publish_order(const vda5050_types::Order& order);
 
-  // Helper to build topic paths
-  std::string build_topic(const std::string& topic_name) const;
   /// \brief Publish instant actions via the protocol adapter
   ///
   /// \param actions The instant actions to publish
