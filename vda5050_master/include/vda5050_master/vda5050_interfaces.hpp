@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (C) 2025 ROS-Industrial Consortium Asia Pacific
  * Advanced Remanufacturing and Technology Centre
  * A*STAR Research Entities (Co. Registration No. 199702110H)
@@ -15,6 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+/// \file vda5050_interfaces.hpp
+/// \brief Convenience header that includes all VDA5050 type definitions
 
 #ifndef VDA5050_MASTER__VDA5050_INTERFACES_HPP_
 #define VDA5050_MASTER__VDA5050_INTERFACES_HPP_

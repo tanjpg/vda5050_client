@@ -30,14 +30,12 @@
 namespace vda5050_master {
 namespace communication {
 
-/**
- * @brief Heartbeat listener lifecycle states
- *
- * State transitions:
- *   STOPPED -> RUNNING (via start_connection_heartbeat())
- *   RUNNING -> STOPPING (via stop_connection_heartbeat())
- *   STOPPING -> STOPPED (when cleanup completes)
- */
+/// \brief Heartbeat listener lifecycle states
+///
+/// State transitions:
+///   STOPPED -> RUNNING (via start_connection_heartbeat())
+///   RUNNING -> STOPPING (via stop_connection_heartbeat())
+///   STOPPING -> STOPPED (when cleanup completes)
 enum class HeartbeatState
 {
   STOPPED,  // Not running, safe to destroy or restart
@@ -45,13 +43,24 @@ enum class HeartbeatState
   STOPPING  // Stop in progress, cleanup ongoing
 };
 
+/// \brief Monitors heartbeat messages and detects connection timeouts
+///
+/// This class runs a background thread that monitors for periodic heartbeat
+/// signals. If no heartbeat is received within the configured interval,
+/// a disconnection callback is invoked.
 class HeartbeatListener
 {
 public:
+  /// \brief Construct a heartbeat listener
+  ///
+  /// \param id Unique identifier for logging
+  /// \param heartbeat_interval Timeout interval in seconds
+  /// \param disconnection_callback Called when heartbeat times out
   HeartbeatListener(
     const std::string& id, const int heartbeat_interval,
     std::function<void()> disconnection_callback);
 
+  /// \brief Destructor - stops the listener thread if running
   virtual ~HeartbeatListener();
 
   // Non-copyable, non-movable (due to thread member)
@@ -60,68 +69,73 @@ public:
   HeartbeatListener(HeartbeatListener&&) = delete;
   HeartbeatListener& operator=(HeartbeatListener&&) = delete;
 
-  /**
-   * @brief Start the heartbeat listener thread
-   */
+  /// \brief Start the heartbeat listener thread
   void start_connection_heartbeat();
 
-  /**
-   * @brief Stop the heartbeat listener thread
-   */
+  /// \brief Stop the heartbeat listener thread
   void stop_connection_heartbeat();
 
-  /**
-   * @brief Notify that a heartbeat was received
-   */
+  /// \brief Notify that a heartbeat was received
   void received_connection();
 
-  /**
-   * @brief Get the timestamp of the last received heartbeat
-   */
+  /// \brief Get the timestamp of the last received heartbeat
+  ///
+  /// \return Time point of last heartbeat received
   std::chrono::system_clock::time_point get_last_connection_report();
 
-  /**
-   * @brief Get the current heartbeat listener state
-   * @return HeartbeatState enum value
-   */
+  /// \brief Get the current heartbeat listener state
+  ///
+  /// \return HeartbeatState enum value
   HeartbeatState get_state();
 
-  /**
-   * @brief Get the current time (virtual for testing)
-   */
+  /// \brief Get the current time
   virtual std::chrono::system_clock::time_point get_current_time();
 
-  /**
-   * @brief Get the check interval (virtual for testing)
-   */
+  /// \brief Get the check interval
   virtual int get_check_interval();
 
 protected:
+  /// \brief Condition variable to notify listener thread that message has been received
   std::condition_variable message_received_;
 
 private:
+  /// \brief Check if a stop has been requested
+  ///
+  /// \return true if state is STOPPING
   bool is_stop_requested();
+
+  /// \brief Check if the heartbeat has timed out
+  ///
+  /// \return true if time since last heartbeat exceeds interval
   bool is_timeout();
+
+  /// \brief Main loop for the heartbeat monitoring thread
   void listen();
 
+  /// \brief Identifier of this object
   std::string id_;
+
+  /// \brief Thread to start heartbeat monitoring
   std::thread connection_thread_;
+
+  /// \brief Maximum interval between messages before heartbeat times out. In seconds
   int heartbeat_interval_;
 
-  // Lifecycle state protected by state_mutex_
+  /// \brief Lifecycle state protected by state_mutex_
   HeartbeatState state_;
 
   std::chrono::system_clock::time_point last_connection_report_;
 
-  // Mutex for state variable
+  /// \brief Mutex for state variable
   mutable std::mutex state_mutex_;
 
-  // Mutex to protect access to last_connection_report_
+  /// \brief Mutex to protect access to last_connection_report_
   mutable std::mutex last_connection_report_mutex_;
 
-  // Mutex for condition variable wait
+  /// \brief Mutex for condition variable wait
   std::mutex check_lock_;
 
+  /// \brief Callback to invoke when heartbeat times out
   std::function<void()> disconnection_callback_;
 };
 
